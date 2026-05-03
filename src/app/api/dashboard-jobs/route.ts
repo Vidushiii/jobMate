@@ -64,9 +64,9 @@ export async function POST(request: NextRequest) {
     let rawJobs: AdzunaJob[] = [];
     for (const term of queryTerms) {
       const effectiveTerm = applyWorkType(term);
-      const result = await fetchJobs(effectiveTerm, location || undefined);
-      if (result.length > 0) {
-        rawJobs = result;
+      const { jobs: fetched } = await fetchJobs(effectiveTerm, location || undefined);
+      if (fetched.length > 0) {
+        rawJobs = fetched;
         break;
       }
     }

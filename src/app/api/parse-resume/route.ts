@@ -43,6 +43,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const t0 = Date.now();
     const buffer = Buffer.from(await file.arrayBuffer());
     const rawText = await extractTextFromBuffer(buffer, file.type);
 
@@ -57,6 +58,7 @@ export async function POST(request: NextRequest) {
     }
 
     const parsed = await parseResume(rawText);
+    console.log(`[parse] ${Date.now() - t0}ms total (extract + gemini-extract)`);
     return Response.json(parsed);
   } catch (err) {
     const message =

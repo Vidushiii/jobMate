@@ -19,10 +19,7 @@ export async function POST(request: NextRequest) {
     const parsed = schema.safeParse(body);
 
     if (!parsed.success) {
-      return Response.json(
-        { error: "Invalid request." },
-        { status: 400 }
-      );
+      return Response.json({ error: "Invalid request." }, { status: 400 });
     }
 
     const { skills, role, search_terms, customQuery, location, jobType, page } = parsed.data;
@@ -30,35 +27,36 @@ export async function POST(request: NextRequest) {
     const applyJobType = (term: string) =>
       jobType === "remote" ? `${term} remote`.trim() : term;
 
-    // If user typed a manual query, use it directly (no retry loop)
+    // Manual query — use directly, no retry loop
     if (customQuery && customQuery.trim()) {
-      const jobs = await fetchJobs(applyJobType(customQuery.trim()), location, page);
-      return Response.json({ jobs });
+      const { jobs, totalCount } = await fetchJobs(applyJobType(customQuery.trim()), location, page);
+      return Response.json({ jobs, totalCount });
     }
 
-    // Otherwise try each AI search_term in order, fall back to skills+role
+    // AI search: try each search_term in order, fall back to skills+role
     const fallbackQuery = [role, ...skills.slice(0, 5)].filter(Boolean).join(" ");
     const queryTerms = [...search_terms, fallbackQuery].filter(Boolean);
 
     let jobs: AdzunaJob[] = [];
+    let totalCount = 0;
     for (const term of queryTerms) {
       const effectiveTerm = applyJobType(term);
       console.log("[fetch-jobs] trying query:", effectiveTerm);
       const result = await fetchJobs(effectiveTerm, location, page);
 
-      if (result.length > 0) {
-        jobs = result;
-        console.log("[fetch-jobs] got", result.length, "results for:", effectiveTerm);
+      if (result.jobs.length > 0) {
+        jobs = result.jobs;
+        totalCount = result.totalCount;
+        console.log("[fetch-jobs] got", jobs.length, "results for:", effectiveTerm);
         break;
       }
 
       console.log("[fetch-jobs] 0 results for:", effectiveTerm, "— trying next");
     }
 
-    return Response.json({ jobs });
+    return Response.json({ jobs, totalCount });
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Failed to fetch jobs.";
+    const message = err instanceof Error ? err.message : "Failed to fetch jobs.";
     return Response.json({ error: message }, { status: 500 });
   }
 }

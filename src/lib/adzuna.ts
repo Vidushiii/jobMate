@@ -19,7 +19,7 @@ export async function fetchJobs(
   query: string,
   location?: string,
   page = 1
-): Promise<AdzunaJob[]> {
+): Promise<{ jobs: AdzunaJob[]; totalCount: number }> {
   const appId = process.env.ADZUNA_APP_ID!;
   const appKey = process.env.ADZUNA_APP_KEY!;
 
@@ -43,6 +43,7 @@ export async function fetchJobs(
   console.log("[adzuna] what:", effectiveQuery);
   console.log("[adzuna] url:", url);
 
+  const t0 = Date.now();
   const res = await fetch(url, {
     next: { revalidate: 300 },
   });
@@ -54,9 +55,11 @@ export async function fetchJobs(
   }
 
   const data = await res.json();
+  const totalCount: number = data.count ?? 0;
+  console.log(`[adzuna] ${Date.now() - t0}ms — ${data.results?.length ?? 0}/${totalCount} results for "${effectiveQuery}"`);
   const results = data.results ?? [];
 
-  return results.map(
+  const jobs = results.map(
     (job: {
       id: string;
       title: string;
@@ -80,4 +83,6 @@ export async function fetchJobs(
       logoUrl: undefined,
     })
   );
+
+  return { jobs, totalCount };
 }

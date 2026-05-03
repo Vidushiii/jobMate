@@ -84,6 +84,58 @@ RESEND_API_KEY=                  # server-only
 - Base: `https://api.adzuna.com/v1/api/jobs/us/search/1`
 - Params: app_id, app_key, results_per_page=20, what, where
 - Strip HTML from description before sending to Gemini
+- Response includes `count` (total matching jobs) — returned as `totalCount` by `fetchJobs()`
+
+## Filter Bar & Search Behavior
+
+### Manual-Search-Only Pattern
+The filter bar **never fires a search automatically**. The only search triggers are:
+- Clicking the **Apply** button
+- Pressing **Enter** while focused in the search input
+
+This prevents wasting Gemini quota on intermediate filter states. Users can adjust all three
+filters (query, city, work type) and fire one search with their final selection.
+
+When any filter value differs from what was last applied, the Apply button shows a small
+pulsing red dot (dirty indicator) signaling there are unapplied changes.
+
+### Filter Bar Layout
+Single horizontal row on desktop; wraps to 2 rows on mobile:
+```
+[🔍 Search input (flex-1)]  [📍 Location (140px)]  [🏢 Work type (140px)]  [Apply (100px)]
+```
+Mobile row 1: search (full width). Mobile row 2: location + worktype + Apply (flex-1 each).
+
+### State Split
+- `filters` / `searchQuery` — staged values (what's in the UI)
+- `appliedFilters` / `appliedQuery` — last values used in a search
+- `isDirty` — true when staged ≠ applied → shows dirty dot on Apply button
+
+## Pagination
+
+### Per-Page Behavior
+- 20 jobs per page (Adzuna `results_per_page=20`)
+- Page number passed as `page` param to `/api/fetch-jobs`
+- Each page is independently fetched from Adzuna and scored by Gemini
+- A new search (Apply button) resets to page 1 and clears the cache
+
+### Client-Side Page Cache
+Scored results are cached in a `useRef<Map<number, ScoredJob[]>>` (lives for the tab session).
+When navigating to a previously visited page, results are shown instantly from cache — no API calls.
+Cache is cleared whenever the user clicks Apply or uploads a new resume.
+
+### Search Parameter Memory
+`lastSearchRef` stores `{ customQuery, filters }` from the most recent search so that
+`handlePageChange` knows which query/filters to re-use when fetching subsequent pages.
+
+### Pagination UI
+Numbered buttons in `JobList` (`PaginationBar` component):
+```
+[< Prev]  [1]  [2]  [3]  …  [10]  [Next >]
+```
+- Current page: coral background (#FF3E6C)
+- Max 5 page buttons shown at a time with `…` ellipsis
+- Total pages computed from `totalCount` (Adzuna's `count` field) ÷ 20
 
 ## Two User Flows
 

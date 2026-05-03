@@ -21,7 +21,9 @@ export async function POST(request: NextRequest) {
       return Response.json({ jobs: [] });
     }
 
+    const t0 = Date.now();
     const scored = await scoreJobs(resume, jobs);
+    console.log(`[score-jobs-route] ${Date.now() - t0}ms`);
     return Response.json({ jobs: scored });
   } catch (err) {
     const message =

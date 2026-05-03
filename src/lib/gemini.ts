@@ -14,7 +14,6 @@ function getModel() {
 }
 
 function cleanJson(raw: string): string {
-  // Strip markdown code fences if Gemini wraps the JSON
   return raw
     .replace(/^```(?:json)?\s*/i, "")
     .replace(/\s*```\s*$/, "")
@@ -34,7 +33,6 @@ async function callWithRetry<T>(fn: () => Promise<T>): Promise<T> {
   } catch (err) {
     if (!isRateLimit(err)) throw err;
   }
-  // 429 on first attempt — wait 2s and retry once
   await new Promise((r) => setTimeout(r, 2000));
   try {
     return await fn();
@@ -48,7 +46,27 @@ async function callWithRetry<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+// Simple djb2-style hash for cache keys
+function hashText(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) {
+    h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  }
+  return String(h >>> 0);
+}
+
+// Module-level cache: survives between requests in the same worker process.
+const parseResumeCache = new Map<string, ParsedResume>();
+const CACHE_MAX = 50;
+
 export async function parseResume(rawText: string): Promise<ParsedResume> {
+  const cacheKey = hashText(rawText);
+  if (parseResumeCache.has(cacheKey)) {
+    console.log("[gemini-extract] cache hit — skipping Gemini call");
+    return parseResumeCache.get(cacheKey)!;
+  }
+
+  const t0 = Date.now();
   const model = getModel();
 
   const prompt = `Extract a comprehensive semantic profile from this resume. Return JSON only:
@@ -79,7 +97,7 @@ ${rawText}`;
 
   try {
     const parsed = JSON.parse(cleanJson(raw));
-    return {
+    const profile: ParsedResume = {
       rawText,
       skills: parsed.skills ?? [],
       implied_skills: parsed.implied_skills ?? [],
@@ -89,6 +107,13 @@ ${rawText}`;
       industries: parsed.industries ?? [],
       achievements: parsed.achievements ?? [],
     };
+    console.log(`[gemini-extract] ${Date.now() - t0}ms`);
+
+    if (parseResumeCache.size >= CACHE_MAX) {
+      parseResumeCache.delete(parseResumeCache.keys().next().value!);
+    }
+    parseResumeCache.set(cacheKey, profile);
+    return profile;
   } catch {
     throw new Error(
       "Unable to parse your resume. Please ensure it contains readable text."
@@ -102,9 +127,8 @@ export async function scoreJobs(
 ): Promise<ScoredJob[]> {
   if (jobs.length === 0) return [];
 
+  const t0 = Date.now();
   const model = getModel();
-  const BATCH_SIZE = 10;
-  const scored: ScoredJob[] = [];
 
   const resumeProfile = {
     skills: resume.skills,
@@ -115,19 +139,15 @@ export async function scoreJobs(
     achievements: resume.achievements,
   };
 
-  for (let i = 0; i < jobs.length; i += BATCH_SIZE) {
-    if (i > 0) await new Promise((r) => setTimeout(r, 4000));
+  // Send ALL jobs in a single Gemini call — no batching loop, no sleep.
+  const jobDescriptions = jobs.map((job, idx) => ({
+    index: idx,
+    title: job.title,
+    company: job.company,
+    description: job.description.slice(0, 1500),
+  }));
 
-    const batch = jobs.slice(i, i + BATCH_SIZE);
-
-    const jobDescriptions = batch.map((job, idx) => ({
-      index: idx,
-      title: job.title,
-      company: job.company,
-      description: job.description.slice(0, 1500),
-    }));
-
-    const prompt = `You are a senior technical recruiter. Score how well this candidate matches each job.
+  const prompt = `You are a senior technical recruiter. Score how well this candidate matches each job.
 DO NOT match keywords. Match MEANING and INTENT.
 
 Rules:
@@ -142,10 +162,10 @@ Rules:
 Candidate profile:
 ${JSON.stringify(resumeProfile)}
 
-Jobs to score (${batch.length} jobs):
+Jobs to score (${jobs.length} jobs):
 ${JSON.stringify(jobDescriptions)}
 
-Return a JSON array with exactly ${batch.length} objects, one per job in the same order:
+Return a JSON array with exactly ${jobs.length} objects, one per job in the same order:
 [
   {
     "index": 0,
@@ -169,39 +189,40 @@ Scoring weights:
 - reasoning: one sentence explaining the score
 All scores must be integers, never floats.`;
 
-    const result = await callWithRetry(() => model.generateContent(prompt));
-    const raw = result.response.text();
+  const result = await callWithRetry(() => model.generateContent(prompt));
+  const raw = result.response.text();
+  console.log(`[gemini-score-batch] ${Date.now() - t0}ms (${jobs.length} jobs)`);
 
-    try {
-      const scores = JSON.parse(cleanJson(raw));
-      const scoresArray = Array.isArray(scores) ? scores : [scores];
+  try {
+    const scores = JSON.parse(cleanJson(raw));
+    const scoresArray: Array<{
+      index: number;
+      overall_score: number;
+      skills_score: number;
+      title_score: number;
+      domain_score: number;
+      matched: string[];
+      missing: string[];
+      reasoning: string;
+    }> = Array.isArray(scores) ? scores : [scores];
 
-      scoresArray.forEach((score: {
-        index: number;
-        overall_score: number;
-        skills_score: number;
-        title_score: number;
-        domain_score: number;
-        matched: string[];
-        missing: string[];
-        reasoning: string;
-      }) => {
-        const job = batch[score.index];
-        if (!job) return;
-        scored.push({
-          ...job,
-          overall_score: Math.round(score.overall_score ?? 0),
-          skills_score: Math.round(score.skills_score ?? 0),
-          title_score: Math.round(score.title_score ?? 0),
-          domain_score: Math.round(score.domain_score ?? 0),
-          matched: score.matched ?? [],
-          missing: score.missing ?? [],
-          reasoning: score.reasoning ?? "",
-        });
-      });
-    } catch {
-      // Fallback: include jobs with 0 score
-      batch.forEach((job) => {
+    const scored: ScoredJob[] = scoresArray
+      .filter((s) => jobs[s.index] != null)
+      .map((s) => ({
+        ...jobs[s.index],
+        overall_score: Math.round(s.overall_score ?? 0),
+        skills_score: Math.round(s.skills_score ?? 0),
+        title_score: Math.round(s.title_score ?? 0),
+        domain_score: Math.round(s.domain_score ?? 0),
+        matched: s.matched ?? [],
+        missing: s.missing ?? [],
+        reasoning: s.reasoning ?? "",
+      }));
+
+    // Fill in any jobs the model dropped
+    const scoredIndexes = new Set(scoresArray.map((s) => s.index));
+    jobs.forEach((job, idx) => {
+      if (!scoredIndexes.has(idx)) {
         scored.push({
           ...job,
           overall_score: 0,
@@ -210,11 +231,23 @@ All scores must be integers, never floats.`;
           domain_score: 0,
           matched: [],
           missing: [],
-          reasoning: "Scoring temporarily unavailable — please try again.",
+          reasoning: "Score unavailable.",
         });
-      });
-    }
-  }
+      }
+    });
 
-  return scored.sort((a, b) => b.overall_score - a.overall_score);
+    return scored.sort((a, b) => b.overall_score - a.overall_score);
+  } catch {
+    // Fallback: return all jobs with 0 scores
+    return jobs.map((job) => ({
+      ...job,
+      overall_score: 0,
+      skills_score: 0,
+      title_score: 0,
+      domain_score: 0,
+      matched: [],
+      missing: [],
+      reasoning: "Scoring temporarily unavailable — please try again.",
+    }));
+  }
 }

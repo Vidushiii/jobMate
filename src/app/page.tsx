@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Search, SlidersHorizontal } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Search } from "lucide-react";
 import { ResumeDropzone } from "@/components/resume/ResumeDropzone";
 import { ConsentModal } from "@/components/resume/ConsentModal";
 import { JobList } from "@/components/jobs/JobList";
@@ -9,7 +9,7 @@ import { Spinner } from "@/components/ui/Spinner";
 import { Button } from "@/components/ui/Button";
 import { createClient } from "@/lib/supabase/client";
 import { AuthDashboard } from "@/components/dashboard/AuthDashboard";
-import type { ParsedResume, ScoredJob, JobFilters } from "@/types";
+import type { ParsedResume, AdzunaJob, ScoredJob, JobFilters } from "@/types";
 
 const INDIAN_CITIES = [
   { label: "All India", value: "" },
@@ -26,14 +26,7 @@ const INDIAN_CITIES = [
   { label: "Remote (India)", value: "Remote" },
 ];
 
-type Stage =
-  | "idle"
-  | "consent"
-  | "parsing"
-  | "fetching"
-  | "scoring"
-  | "results"
-  | "error";
+type Stage = "idle" | "consent" | "parsing" | "fetching" | "results" | "error";
 
 const STAGE_INFO: Record<string, { label: string; detail: string }> = {
   parsing: {
@@ -41,28 +34,64 @@ const STAGE_INFO: Record<string, { label: string; detail: string }> = {
     detail: "AI is extracting your skills and experience...",
   },
   fetching: {
-    label: "Searching for jobs",
-    detail: "Finding live job listings matching your profile...",
-  },
-  scoring: {
-    label: "Scoring matches",
-    detail: "AI is ranking jobs by semantic fit with your resume...",
+    label: "Finding matches",
+    detail: "Searching live listings and ranking by fit...",
   },
 };
 
-const PIPELINE_STAGES = ["parsing", "fetching", "scoring"] as const;
+const PIPELINE_STAGES = ["parsing", "fetching"] as const;
+
+// Unscored placeholder applied to raw Adzuna jobs before Gemini scores them
+function toPlaceholder(j: AdzunaJob): ScoredJob {
+  return {
+    ...j,
+    overall_score: -1,
+    skills_score: -1,
+    title_score: -1,
+    domain_score: -1,
+    matched: [],
+    missing: [],
+    reasoning: "",
+  };
+}
 
 export default function HomePage() {
   const [stage, setStage] = useState<Stage>("idle");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [parsedResume, setParsedResume] = useState<ParsedResume | null>(null);
   const [jobs, setJobs] = useState<ScoredJob[]>([]);
+  const [isScoringInProgress, setIsScoringInProgress] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+
+  // Filter bar — staged (what's in the UI) vs applied (last search)
   const [filters, setFilters] = useState<JobFilters>({});
-  const [showFilters, setShowFilters] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [appliedFilters, setAppliedFilters] = useState<JobFilters>({});
+  const [appliedQuery, setAppliedQuery] = useState("");
+
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalCount, setTotalCount] = useState<number | undefined>(undefined);
+
   const [authStatus, setAuthStatus] = useState<"loading" | "anonymous" | "authenticated">("loading");
   const [dashProfile, setDashProfile] = useState<{ full_name?: string; email: string; has_resume: boolean } | null>(null);
+
+  // Refs
+  const pipelineRef = useRef(0);
+  // Page cache: cleared on every new search, populated per page
+  const pageCacheRef = useRef<Map<number, ScoredJob[]>>(new Map());
+  // Remembers the last search params so pagination can re-use them
+  const lastSearchRef = useRef<{ customQuery: string | null; filters: JobFilters }>({
+    customQuery: null,
+    filters: {},
+  });
+  const jobListRef = useRef<HTMLDivElement>(null);
+
+  // True when staged filters differ from what was last searched
+  const isDirty =
+    searchQuery !== appliedQuery ||
+    (filters.location ?? "") !== (appliedFilters.location ?? "") ||
+    (filters.jobType ?? "") !== (appliedFilters.jobType ?? "");
 
   useEffect(() => {
     const supabase = createClient();
@@ -86,6 +115,109 @@ export default function HomePage() {
     })();
   }, []);
 
+  const scrollToJobList = () => {
+    setTimeout(() => {
+      jobListRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  };
+
+  // Core fetch+score function used by initial pipeline, Apply button, and pagination.
+  const handleSearch = async (
+    customQuery: string | null,
+    filterValues: JobFilters,
+    page: number,
+    providedResume?: ParsedResume
+  ) => {
+    const resume = providedResume ?? parsedResume;
+    if (!resume && !customQuery) return;
+
+    // Return cached page immediately — no network call
+    if (pageCacheRef.current.has(page)) {
+      setJobs(pageCacheRef.current.get(page)!);
+      setCurrentPage(page);
+      scrollToJobList();
+      return;
+    }
+
+    const runId = ++pipelineRef.current;
+    setIsScoringInProgress(false);
+    setCurrentPage(page);
+
+    try {
+      const fetchStart = Date.now();
+      const fetchBody = customQuery
+        ? { customQuery, location: filterValues.location, jobType: filterValues.jobType, page }
+        : {
+            skills: [...(resume!.skills ?? []), ...(resume!.implied_skills ?? [])].slice(0, 10),
+            role: resume!.job_titles[0] ?? "",
+            search_terms: resume!.search_terms ?? [],
+            location: filterValues.location,
+            jobType: filterValues.jobType,
+            page,
+          };
+
+      const fetchRes = await fetch("/api/fetch-jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(fetchBody),
+      });
+
+      if (!fetchRes.ok) {
+        const { error } = await fetchRes.json();
+        throw new Error(error ?? "Failed to fetch jobs.");
+      }
+
+      const { jobs: rawJobs, totalCount: count }: { jobs: AdzunaJob[]; totalCount: number } =
+        await fetchRes.json();
+      console.log(`[adzuna-client] ${Date.now() - fetchStart}ms — ${rawJobs.length} jobs (total: ${count})`);
+
+      if (runId !== pipelineRef.current) return;
+      setTotalCount(count);
+
+      // Show raw jobs immediately with sentinel scores for progressive display
+      if (rawJobs.length > 0) {
+        setJobs(rawJobs.map(toPlaceholder));
+        setStage("results");
+        setIsScoringInProgress(true);
+        scrollToJobList();
+      } else {
+        setJobs([]);
+        setStage("results");
+        return;
+      }
+
+      // Score all jobs in one Gemini call
+      const scoreStart = Date.now();
+      const scoreRes = await fetch("/api/score-jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resume: resume ?? parsedResume, jobs: rawJobs }),
+      });
+
+      if (!scoreRes.ok) {
+        const { error } = await scoreRes.json();
+        throw new Error(error ?? "Failed to score jobs.");
+      }
+
+      const { jobs: scoredJobs } = await scoreRes.json();
+      console.log(`[score-client] ${Date.now() - scoreStart}ms`);
+
+      if (runId !== pipelineRef.current) return;
+      pageCacheRef.current.set(page, scoredJobs);
+      setJobs(scoredJobs);
+      setIsScoringInProgress(false);
+    } catch (err) {
+      if (runId !== pipelineRef.current) return;
+      setIsScoringInProgress(false);
+      // If jobs are already visible (just scoring failed), keep them on screen silently
+      if (stage === "results" && jobs.length > 0) return;
+      setErrorMessage(
+        err instanceof Error ? err.message : "Something went wrong. Please try again."
+      );
+      setStage("error");
+    }
+  };
+
   const handleFileSelect = (file: File) => {
     setSelectedFile(file);
     setStage("consent");
@@ -97,10 +229,14 @@ export default function HomePage() {
   };
 
   const runPipeline = async (file: File) => {
+    pipelineRef.current++;
+    pageCacheRef.current.clear();
+    setIsScoringInProgress(false);
     setStage("parsing");
+    const t0 = Date.now();
 
     try {
-      // Step 1: Parse resume
+      const parseStart = Date.now();
       const formData = new FormData();
       formData.append("resume", file);
       formData.append("consent_token", "user_consented");
@@ -116,9 +252,9 @@ export default function HomePage() {
       }
 
       const resume: ParsedResume = await parseRes.json();
+      console.log(`[parse] ${Date.now() - parseStart}ms`);
       setParsedResume(resume);
 
-      // Save to profile if authenticated (fire and forget)
       if (authStatus === "authenticated") {
         fetch("/api/save-profile", {
           method: "POST",
@@ -127,47 +263,16 @@ export default function HomePage() {
         }).catch(() => {});
       }
 
-      // Step 2: Fetch jobs
+      // Commit current filter state as the applied baseline for this search
+      setAppliedFilters({ ...filters });
+      setAppliedQuery("");
+      lastSearchRef.current = { customQuery: null, filters: { ...filters } };
+
       setStage("fetching");
-      const fetchRes = await fetch("/api/fetch-jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          skills: [
-            ...(resume.skills ?? []),
-            ...(resume.implied_skills ?? []),
-          ].slice(0, 10),
-          role: resume.job_titles[0] ?? "",
-          search_terms: resume.search_terms ?? [],
-          location: filters.location,
-          jobType: filters.jobType,
-        }),
-      });
-
-      if (!fetchRes.ok) {
-        const { error } = await fetchRes.json();
-        throw new Error(error ?? "Failed to fetch jobs.");
-      }
-
-      const { jobs: rawJobs } = await fetchRes.json();
-
-      // Step 3: Score jobs
-      setStage("scoring");
-      const scoreRes = await fetch("/api/score-jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resume, jobs: rawJobs }),
-      });
-
-      if (!scoreRes.ok) {
-        const { error } = await scoreRes.json();
-        throw new Error(error ?? "Failed to score jobs.");
-      }
-
-      const { jobs: scoredJobs } = await scoreRes.json();
-      setJobs(scoredJobs);
-      setStage("results");
+      await handleSearch(null, filters, 1, resume);
+      console.log(`[total] ${Date.now() - t0}ms`);
     } catch (err) {
+      setIsScoringInProgress(false);
       setErrorMessage(
         err instanceof Error ? err.message : "Something went wrong. Please try again."
       );
@@ -179,61 +284,48 @@ export default function HomePage() {
     if (selectedFile) runPipeline(selectedFile);
   };
 
-  const handleManualSearch = async (query: string) => {
+  // Triggered only by "Apply" button click or Enter in search input
+  const handleApply = () => {
     if (!parsedResume) return;
+    const q = searchQuery.trim() || null;
+    const f = { ...filters };
 
-    try {
-      setStage("fetching");
-      const fetchRes = await fetch("/api/fetch-jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customQuery: query,
-          location: filters.location,
-          jobType: filters.jobType,
-        }),
-      });
+    setAppliedFilters(f);
+    setAppliedQuery(searchQuery);
+    lastSearchRef.current = { customQuery: q, filters: f };
+    pageCacheRef.current.clear();
+    setCurrentPage(1);
+    setTotalCount(undefined);
 
-      if (!fetchRes.ok) {
-        const { error } = await fetchRes.json();
-        throw new Error(error ?? "Failed to fetch jobs.");
-      }
+    handleSearch(q, f, 1);
+  };
 
-      const { jobs: rawJobs } = await fetchRes.json();
-
-      setStage("scoring");
-      const scoreRes = await fetch("/api/score-jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ resume: parsedResume, jobs: rawJobs }),
-      });
-
-      if (!scoreRes.ok) {
-        const { error } = await scoreRes.json();
-        throw new Error(error ?? "Failed to score jobs.");
-      }
-
-      const { jobs: scoredJobs } = await scoreRes.json();
-      setJobs(scoredJobs);
-      setStage("results");
-    } catch (err) {
-      setErrorMessage(
-        err instanceof Error ? err.message : "Something went wrong. Please try again."
-      );
-      setStage("error");
-    }
+  const handlePageChange = (newPage: number) => {
+    const { customQuery, filters: lastFilters } = lastSearchRef.current;
+    handleSearch(customQuery, lastFilters, newPage);
   };
 
   const handleClearResume = () => {
+    pipelineRef.current++;
+    pageCacheRef.current.clear();
     setSelectedFile(null);
     setParsedResume(null);
     setJobs([]);
     setStage("idle");
     setErrorMessage("");
+    setIsScoringInProgress(false);
+    setCurrentPage(1);
+    setTotalCount(undefined);
+    setFilters({});
+    setSearchQuery("");
+    setAppliedFilters({});
+    setAppliedQuery("");
   };
 
   const isProcessing = PIPELINE_STAGES.includes(stage as typeof PIPELINE_STAGES[number]);
   const currentStageInfo = isProcessing ? STAGE_INFO[stage] : null;
+  const cityLabel =
+    INDIAN_CITIES.find((c) => c.value === (appliedFilters.location ?? ""))?.label ?? "All India";
 
   if (authStatus === "loading") {
     return (
@@ -265,7 +357,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {/* Sticky dropzone */}
+      {/* Sticky dropzone + filter bar */}
       <div className="sticky top-16 z-30 bg-white pb-4 pt-2">
         <ResumeDropzone
           onFileSelect={handleFileSelect}
@@ -274,35 +366,30 @@ export default function HomePage() {
           disabled={isProcessing}
         />
 
-        {/* Search + filter bar */}
-        {stage === "results" && (
-          <div className="mt-3 space-y-2">
-            {/* Manual search input */}
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
-              <input
-                type="text"
-                placeholder="Search jobs (e.g. product manager, react developer)"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && searchQuery.trim()) {
-                    handleManualSearch(searchQuery.trim());
-                  }
-                }}
-                className="w-full pl-9 pr-4 border border-gray-200 rounded-lg py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF3E6C] focus:border-transparent"
-              />
-            </div>
+        {/* Single-row filter bar — shown once results are available */}
+        {stage === "results" && parsedResume && (
+          <div className="mt-3">
+            <div className="flex gap-3 flex-wrap sm:flex-nowrap items-center">
+              {/* Search input — full width on mobile, flex-1 on desktop */}
+              <div className="relative flex-1 basis-full sm:basis-auto min-w-0">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Search jobs (e.g. product manager, react developer)"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleApply();
+                  }}
+                  className="w-full h-10 pl-9 pr-4 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#FF3E6C] focus:border-transparent"
+                />
+              </div>
 
-            {/* City + optional filters row */}
-            <div className="flex items-center gap-3 flex-wrap">
-              {/* City dropdown */}
+              {/* Location dropdown */}
               <select
                 value={filters.location ?? ""}
-                onChange={(e) =>
-                  setFilters((f) => ({ ...f, location: e.target.value }))
-                }
-                className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF3E6C] bg-white"
+                onChange={(e) => setFilters((f) => ({ ...f, location: e.target.value }))}
+                className="flex-1 sm:flex-none sm:w-[140px] h-10 min-w-[100px] border border-gray-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF3E6C] bg-white"
               >
                 {INDIAN_CITIES.map((city) => (
                   <option key={city.value} value={city.value}>
@@ -311,32 +398,36 @@ export default function HomePage() {
                 ))}
               </select>
 
-              {/* More filters toggle */}
-              <button
-                onClick={() => setShowFilters(!showFilters)}
-                className="flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 transition-colors"
+              {/* Work type dropdown */}
+              <select
+                value={filters.jobType ?? ""}
+                onChange={(e) =>
+                  setFilters((f) => ({
+                    ...f,
+                    jobType: e.target.value as JobFilters["jobType"],
+                  }))
+                }
+                className="flex-1 sm:flex-none sm:w-[140px] h-10 min-w-[100px] border border-gray-200 rounded-lg px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF3E6C] bg-white"
               >
-                <SlidersHorizontal className="w-4 h-4" />
-                {showFilters ? "Hide filters" : "More filters"}
-              </button>
+                <option value="">All types</option>
+                <option value="onsite">On-site</option>
+                <option value="hybrid">Hybrid</option>
+                <option value="remote">Remote</option>
+              </select>
 
-              {showFilters && (
-                <select
-                  value={filters.jobType ?? ""}
-                  onChange={(e) =>
-                    setFilters((f) => ({
-                      ...f,
-                      jobType: e.target.value as JobFilters["jobType"],
-                    }))
-                  }
-                  className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF3E6C] bg-white"
+              {/* Apply button with dirty-state indicator */}
+              <div className="relative shrink-0 flex-1 sm:flex-none">
+                <button
+                  onClick={handleApply}
+                  disabled={isScoringInProgress}
+                  className="w-full sm:w-[100px] h-10 rounded-lg text-sm font-semibold text-white bg-[#FF3E6C] hover:bg-[#e62e5c] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  <option value="">Any type</option>
-                  <option value="remote">Remote</option>
-                  <option value="hybrid">Hybrid</option>
-                  <option value="onsite">On-site</option>
-                </select>
-              )}
+                  Apply
+                </button>
+                {isDirty && (
+                  <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-[#FF3E6C] border-2 border-white animate-pulse" />
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -349,7 +440,7 @@ export default function HomePage() {
         onCancel={handleConsentCancel}
       />
 
-      {/* Processing state */}
+      {/* Processing state — initial pipeline only */}
       {isProcessing && currentStageInfo && (
         <div className="flex flex-col items-center justify-center py-20 gap-5">
           <Spinner size="lg" />
@@ -373,7 +464,7 @@ export default function HomePage() {
                       : "bg-gray-200"
                   }`}
                 />
-                {i < 2 && (
+                {i < PIPELINE_STAGES.length - 1 && (
                   <div
                     className={`w-10 h-0.5 mx-1 transition-colors ${
                       PIPELINE_STAGES.indexOf(stage as typeof PIPELINE_STAGES[number]) > i
@@ -387,8 +478,7 @@ export default function HomePage() {
           </div>
           <div className="flex text-xs text-gray-400" style={{ gap: "2.5rem" }}>
             <span>Reading</span>
-            <span>Searching</span>
-            <span>Scoring</span>
+            <span>Finding</span>
           </div>
         </div>
       )}
@@ -422,13 +512,24 @@ export default function HomePage() {
 
       {/* Results */}
       {stage === "results" && (
-        <div className="mt-6">
+        <div className="mt-6" ref={jobListRef}>
           {parsedResume && (
             <div className="mb-5 flex items-center justify-between flex-wrap gap-3">
               <div>
-                <h2 className="text-lg font-bold text-gray-900">
-                  {jobs.length} job{jobs.length !== 1 ? "s" : ""} found
-                </h2>
+                <div className="flex items-center gap-3">
+                  <h2 className="text-lg font-bold text-gray-900">
+                    {jobs.length} job{jobs.length !== 1 ? "s" : ""} found
+                    {totalCount && totalCount > jobs.length
+                      ? ` of ${totalCount.toLocaleString()}`
+                      : ""}
+                  </h2>
+                  {isScoringInProgress && (
+                    <span className="inline-flex items-center gap-1.5 text-xs text-[#FF3E6C] font-medium">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#FF3E6C] animate-pulse" />
+                      Scoring matches…
+                    </span>
+                  )}
+                </div>
                 {jobs.length > 0 && parsedResume.skills.length > 0 && (
                   <p className="text-sm text-gray-500">
                     Based on:{" "}
@@ -453,7 +554,10 @@ export default function HomePage() {
           <JobList
             jobs={jobs}
             resumeProcessed={true}
-            cityName={INDIAN_CITIES.find((c) => c.value === (filters.location ?? ""))?.label ?? "All India"}
+            cityName={cityLabel}
+            totalCount={totalCount}
+            page={currentPage}
+            onPageChange={handlePageChange}
           />
         </div>
       )}
