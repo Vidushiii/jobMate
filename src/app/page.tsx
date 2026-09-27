@@ -284,7 +284,7 @@ export default function HomePage() {
     if (selectedFile) runPipeline(selectedFile);
   };
 
-  // Triggered only by "Apply" button click or Enter in search input
+  // Triggered only by "Search" button click or Enter in search input
   const handleApply = () => {
     if (!parsedResume) return;
     const q = searchQuery.trim() || null;
@@ -364,6 +364,7 @@ export default function HomePage() {
           selectedFile={selectedFile}
           onClear={handleClearResume}
           disabled={isProcessing}
+          processed={stage === "results"}
         />
 
         {/* Single-row filter bar — shown once results are available */}
@@ -415,14 +416,14 @@ export default function HomePage() {
                 <option value="remote">Remote</option>
               </select>
 
-              {/* Apply button with dirty-state indicator */}
+              {/* Search button with dirty-state indicator */}
               <div className="relative shrink-0 flex-1 sm:flex-none">
                 <button
                   onClick={handleApply}
                   disabled={isScoringInProgress}
                   className="w-full sm:w-[100px] h-10 rounded-lg text-sm font-semibold text-white bg-[#FF3E6C] hover:bg-[#e62e5c] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  Apply
+                  Search
                 </button>
                 {isDirty && (
                   <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-[#FF3E6C] border-2 border-white animate-pulse" />
@@ -568,7 +569,7 @@ export default function HomePage() {
             {
               icon: "🔒",
               title: "Private by default",
-              desc: "No account needed. Your data stays in your session and is deleted automatically after 24 hours.",
+              desc: "No account needed. Your resume is used only for this session and discarded when you close or refresh the tab.",
             },
           ].map((f) => (
             <div key={f.title} className="bg-gray-50 rounded-2xl p-6 text-center">

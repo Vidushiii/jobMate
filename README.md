@@ -385,14 +385,14 @@ When a model returns `429` (rate limit or quota) or `503` (overloaded), the code
 ## Search, Filters & Pagination
 
 ### Anonymous results page: manual search only
-The filter bar **never searches automatically**, so Gemini quota isn't spent on filter changes the user hasn't finished making. A search runs only when the user clicks **Apply** or presses **Enter** in the search box.
+The filter bar **never searches automatically**, so Gemini quota isn't spent on filter changes the user hasn't finished making. A search runs only when the user clicks **Search** or presses **Enter** in the search box.
 
 ```
-[🔍 Search (flex-1)]  [📍 Location]  [🏢 Work type]  [Apply ●]
+[🔍 Search (flex-1)]  [📍 Location]  [🏢 Work type]  [Search ●]
 ```
 
 - The values on screen (`filters`, `searchQuery`) are tracked separately from the last search that ran (`appliedFilters`, `appliedQuery`).
-- `isDirty` is true when the two differ, and a pulsing red dot then appears on **Apply**.
+- `isDirty` is true when the two differ, and a pulsing red dot then appears on **Search**.
 - On mobile the bar wraps to two rows.
 - The location options are *All India*, Bengaluru, Mumbai, Delhi NCR, Hyderabad, Pune, Chennai, Gurgaon, Noida, Kolkata, Ahmedabad and Remote.
 
@@ -405,7 +405,7 @@ The filter bar **never searches automatically**, so Gemini quota isn't spent on 
 - `PaginationBar` shows `[< Prev] [1] [2] [3] … [10] [Next >]` with at most 5 numbered buttons. The current page is highlighted in coral.
 - **Page cache:** a `useRef<Map<number, ScoredJob[]>>` keeps scored pages for the rest of the tab session, so returning to a page uses no API calls.
 - `lastSearchRef` remembers the query and filters of the last search, so moving to another page repeats the same search.
-- Clicking Apply or uploading a new resume clears the cache and goes back to page 1.
+- Clicking Search or uploading a new resume clears the cache and goes back to page 1.
 
 ---
 

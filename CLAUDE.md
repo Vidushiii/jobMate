@@ -89,21 +89,21 @@ ADZUNA_APP_KEY=
 
 ### Manual-Search-Only Pattern
 The filter bar **never fires a search automatically**. The only search triggers are:
-- Clicking the **Apply** button
+- Clicking the **Search** button
 - Pressing **Enter** while focused in the search input
 
 This prevents wasting Gemini quota on intermediate filter states. Users can adjust all three
 filters (query, city, work type) and fire one search with their final selection.
 
-When any filter value differs from what was last applied, the Apply button shows a small
+When any filter value differs from what was last applied, the Search button shows a small
 pulsing red dot (dirty indicator) signaling there are unapplied changes.
 
 ### Filter Bar Layout
 Single horizontal row on desktop; wraps to 2 rows on mobile:
 ```
-[🔍 Search input (flex-1)]  [📍 Location (140px)]  [🏢 Work type (140px)]  [Apply (100px)]
+[🔍 Search input (flex-1)]  [📍 Location (140px)]  [🏢 Work type (140px)]  [Search (100px)]
 ```
-Mobile row 1: search (full width). Mobile row 2: location + worktype + Apply (flex-1 each).
+Mobile row 1: search (full width). Mobile row 2: location + worktype + Search (flex-1 each).
 
 ### State Split
 - `filters` / `searchQuery` — staged values (what's in the UI)
@@ -116,12 +116,12 @@ Mobile row 1: search (full width). Mobile row 2: location + worktype + Apply (fl
 - 20 jobs per page (Adzuna `results_per_page=20`)
 - Page number passed as `page` param to `/api/fetch-jobs`
 - Each page is independently fetched from Adzuna and scored by Gemini
-- A new search (Apply button) resets to page 1 and clears the cache
+- A new search (Search button) resets to page 1 and clears the cache
 
 ### Client-Side Page Cache
 Scored results are cached in a `useRef<Map<number, ScoredJob[]>>` (lives for the tab session).
 When navigating to a previously visited page, results are shown instantly from cache — no API calls.
-Cache is cleared whenever the user clicks Apply or uploads a new resume.
+Cache is cleared whenever the user clicks Search or uploads a new resume.
 
 ### Search Parameter Memory
 `lastSearchRef` stores `{ customQuery, filters }` from the most recent search so that

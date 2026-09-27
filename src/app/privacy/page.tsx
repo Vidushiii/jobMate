@@ -103,7 +103,7 @@ export default function PrivacyPage() {
           <ul className="list-disc list-outside ml-5 space-y-2">
             <li>
               <span className="font-medium">Anonymous sessions:</span> your resume data exists
-              only during your active session and is discarded when you close the browser
+              only for your current session and is discarded when you close or refresh the tab
             </li>
             <li>
               <span className="font-medium">Account data:</span> kept for as long as your account

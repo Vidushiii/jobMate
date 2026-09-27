@@ -10,6 +10,7 @@ interface ResumeDropzoneProps {
   selectedFile?: File | null;
   onClear?: () => void;
   disabled?: boolean;
+  processed?: boolean;
 }
 
 const ACCEPTED_TYPES = {
@@ -30,6 +31,7 @@ export function ResumeDropzone({
   selectedFile,
   onClear,
   disabled = false,
+  processed = false,
 }: ResumeDropzoneProps) {
   const [error, setError] = useState("");
 
@@ -74,7 +76,7 @@ export function ResumeDropzone({
               {selectedFile.name}
             </p>
             <p className="text-xs text-gray-500 mt-0.5">
-              {formatBytes(selectedFile.size)} · Ready to process
+              {formatBytes(selectedFile.size)} · {processed ? "Processed" : "Ready to process"}
             </p>
           </div>
           {onClear && !disabled && (

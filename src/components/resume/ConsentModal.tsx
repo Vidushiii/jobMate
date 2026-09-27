@@ -57,11 +57,11 @@ export function ConsentModal({ isOpen, onAccept, onCancel }: ConsentModalProps) 
               <EyeOff className="w-4 h-4 text-amber-600" />
             </div>
             <div>
-              <p className="text-sm font-medium text-gray-800">Not stored on your device</p>
+              <p className="text-sm font-medium text-gray-800">Used for this session only</p>
               <p className="text-sm text-gray-500 mt-0.5">
                 Your resume is processed on our servers to generate matches, then
-                discarded after this session. Nothing is saved to your browser or
-                without your permission.
+                discarded when you close or refresh the tab. Nothing is saved to
+                your browser or our database.
               </p>
             </div>
           </div>
