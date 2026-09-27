@@ -1,12 +1,12 @@
 // Supabase Edge Function — Deno runtime
 // Runs nightly to match users' resumes against fresh Adzuna job listings,
-// score with Gemini, and send Resend emails.
+// score with Gemini, and save strong matches as in-app notifications.
 // Schedule in Supabase Dashboard: 0 8 * * * (8 AM UTC daily)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const ADZUNA_BASE = "https://api.adzuna.com/v1/api/jobs/us/search/1";
-const GEMINI_MODEL = "gemini-2.5-flash";
+const GEMINI_MODEL = "gemini-3.8-flash";
 
 // ──────────────────────────────────────────────────────────────
 // Auth guard
@@ -175,61 +175,6 @@ score is 0-100 integer.`
 }
 
 // ──────────────────────────────────────────────────────────────
-// Resend email
-// ──────────────────────────────────────────────────────────────
-async function sendEmail(
-  to: string,
-  name: string,
-  jobs: ScoredJob[]
-): Promise<void> {
-  const top5 = jobs.slice(0, 5);
-
-  const jobRows = top5
-    .map(
-      (j) => `
-    <tr>
-      <td style="padding:16px;border-bottom:1px solid #f3f4f6">
-        <div style="font-weight:600;color:#111827">${j.title}</div>
-        <div style="color:#6b7280;font-size:14px">${j.company} · ${j.location}</div>
-        <span style="background:#FFF0F3;color:#FF3E6C;padding:2px 8px;border-radius:9999px;font-size:12px">${j.match_score}% match</span>
-        <div style="margin-top:6px;color:#6b7280;font-size:13px">${j.reasoning}</div>
-        <div style="margin-top:10px">
-          <a href="${j.url}" style="background:#FF3E6C;color:white;padding:8px 16px;border-radius:8px;text-decoration:none;font-size:13px;font-weight:500">Apply Now →</a>
-        </div>
-      </td>
-    </tr>`
-    )
-    .join("");
-
-  const html = `<!DOCTYPE html><html><body style="background:#f9fafb;font-family:system-ui,sans-serif">
-  <div style="max-width:600px;margin:32px auto;background:white;border-radius:16px;overflow:hidden">
-    <div style="background:#FF3E6C;padding:32px;text-align:center">
-      <h1 style="color:white;margin:0;font-size:22px">JobMate</h1>
-      <p style="color:rgba(255,255,255,0.85);margin:8px 0 0;font-size:14px">${jobs.length} new job match${jobs.length !== 1 ? "es" : ""} for you</p>
-    </div>
-    <div style="padding:32px">
-      <p style="color:#374151">Hi ${name || "there"},</p>
-      <table style="width:100%;border-collapse:collapse;border:1px solid #f3f4f6;border-radius:12px;overflow:hidden"><tbody>${jobRows}</tbody></table>
-    </div>
-  </div>
-</body></html>`;
-
-  await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${Deno.env.get("RESEND_API_KEY")}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: "JobMate <noreply@jobmate.app>",
-      to,
-      subject: `${jobs.length} new job match${jobs.length !== 1 ? "es" : ""} — top score ${top5[0]?.match_score}%`,
-      html,
-    }),
-  });
-}
-
-// ──────────────────────────────────────────────────────────────
 // Main handler
 // ──────────────────────────────────────────────────────────────
 Deno.serve(async (req) => {
@@ -245,7 +190,7 @@ Deno.serve(async (req) => {
   // Fetch all users with notifications enabled and a saved resume
   const { data: profiles, error } = await supabase
     .from("profiles")
-    .select("id, email, full_name, resume_text")
+    .select("id, resume_text")
     .eq("notification_enabled", true)
     .not("resume_text", "is", null);
 
@@ -300,14 +245,7 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // Send email
-      await sendEmail(
-        profile.email,
-        profile.full_name ?? "",
-        matched
-      );
-
-      results.push({ id: profile.id, status: `sent ${matched.length} matches` });
+      results.push({ id: profile.id, status: `saved ${matched.length} matches` });
 
       // Rate limit: wait between users
       await new Promise((r) => setTimeout(r, 2000));

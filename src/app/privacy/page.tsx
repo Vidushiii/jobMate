@@ -53,7 +53,7 @@ export default function PrivacyPage() {
             <li>Optional profile details: name, location, LinkedIn URL</li>
             <li>Your saved resume and job preferences</li>
             <li>Notification preferences</li>
-            <li>A history of job alerts we&apos;ve sent you</li>
+            <li>A history of job matches saved to your notifications</li>
           </ul>
         </section>
 
@@ -62,7 +62,7 @@ export default function PrivacyPage() {
           <ul className="list-disc list-outside ml-5 space-y-2">
             <li>To extract skills from your resume using Google Gemini AI</li>
             <li>To match your skills to live job listings from Adzuna</li>
-            <li>To send you job alert emails (only if you&apos;ve opted in)</li>
+            <li>To save new job matches to your notifications (only if you&apos;ve opted in)</li>
             <li>
               To improve our matching accuracy through aggregated, anonymized usage analysis
             </li>
@@ -86,9 +86,6 @@ export default function PrivacyPage() {
             </li>
             <li>
               <span className="font-medium">Supabase</span> — stores your account data securely
-            </li>
-            <li>
-              <span className="font-medium">Resend</span> — sends notification emails
             </li>
             <li>
               <span className="font-medium">Sentry</span> — captures error reports (no resume
@@ -129,7 +126,7 @@ export default function PrivacyPage() {
               us)
             </li>
             <li>Opt out of analytics tracking</li>
-            <li>Unsubscribe from notification emails</li>
+            <li>Turn off job alerts at any time from your profile</li>
           </ul>
           <p className="mt-4">
             If you&apos;re in the EU, UK, or California, you have additional rights under GDPR and

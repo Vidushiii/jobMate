@@ -107,8 +107,8 @@ export default function NotificationsPage() {
             No job alerts yet
           </h3>
           <p className="text-gray-500 text-sm max-w-sm mx-auto mb-6">
-            Enable email notifications on your profile and we&apos;ll send you
-            matching jobs every day.
+            Turn on job alerts in your profile and we&apos;ll add new
+            matching jobs here every day.
           </p>
           <Link href="/profile">
             <Button>

@@ -538,17 +538,6 @@ export default function HomePage() {
                   </p>
                 )}
               </div>
-              {authStatus === "anonymous" && (
-                <div className="bg-[#FFF0F3] border border-[#FF3E6C]/20 rounded-xl px-4 py-3 text-sm">
-                  <a
-                    href="/signup"
-                    className="font-semibold text-[#FF3E6C] hover:underline"
-                  >
-                    Create a free account
-                  </a>{" "}
-                  <span className="text-gray-600">to save results & get alerts</span>
-                </div>
-              )}
             </div>
           )}
           <JobList

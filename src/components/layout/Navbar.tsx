@@ -6,7 +6,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { Bell, Briefcase, LogOut, User } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import type { User as SupabaseUser } from "@supabase/supabase-js";
-import { Button } from "@/components/ui/Button";
 
 export function Navbar() {
   const [user, setUser] = useState<SupabaseUser | null>(null);
@@ -166,16 +165,7 @@ export function Navbar() {
                   </div>
                 </div>
               </>
-            ) : (
-              <>
-                <Link href="/login">
-                  <Button variant="ghost" size="sm">Sign in</Button>
-                </Link>
-                <Link href="/signup">
-                  <Button size="sm">Sign up</Button>
-                </Link>
-              </>
-            )}
+            ) : null}
           </div>
 
         </div>

@@ -3,9 +3,12 @@ import type { ParsedResume, AdzunaJob, ScoredJob } from "@/types";
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
-function getModel() {
+// Primary model first; on overload or rate limit, fall through to the next one
+const GEMINI_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash"];
+
+function getModel(name: string) {
   return genAI.getGenerativeModel({
-    model: "gemini-2.5-flash",
+    model: name,
     generationConfig: {
       responseMimeType: "application/json",
       temperature: 0.1,
@@ -20,30 +23,37 @@ function cleanJson(raw: string): string {
     .trim();
 }
 
-function isRateLimit(err: unknown): boolean {
+// Rate limits (429/quota) and temporary overload (503) are worth retrying
+function isTransient(err: unknown): boolean {
   return (
     err instanceof Error &&
-    (err.message.includes("429") || err.message.includes("quota"))
+    (err.message.includes("429") ||
+      err.message.includes("quota") ||
+      err.message.includes("503") ||
+      err.message.includes("overloaded") ||
+      err.message.includes("high demand"))
   );
 }
 
-async function callWithRetry<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (err) {
-    if (!isRateLimit(err)) throw err;
-  }
-  await new Promise((r) => setTimeout(r, 2000));
-  try {
-    return await fn();
-  } catch (err) {
-    if (isRateLimit(err)) {
-      throw new Error(
-        "Our AI is at capacity right now. Please try again in a minute."
-      );
+async function generate(prompt: string): Promise<string> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 2000));
+    for (const name of GEMINI_MODELS) {
+      try {
+        const result = await getModel(name).generateContent(prompt);
+        return result.response.text();
+      } catch (err) {
+        if (!isTransient(err)) throw err;
+        console.log(`[gemini] ${name} unavailable — trying next`);
+      }
     }
-    throw err;
   }
+  throw new Error("Our AI is at capacity right now. Please try again in a minute.");
+}
+
+function clampScore(value: unknown, max: number): number {
+  const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : 0;
+  return Math.min(max, Math.max(0, n));
 }
 
 // Simple djb2-style hash for cache keys
@@ -67,7 +77,6 @@ export async function parseResume(rawText: string): Promise<ParsedResume> {
   }
 
   const t0 = Date.now();
-  const model = getModel();
 
   const prompt = `Extract a comprehensive semantic profile from this resume. Return JSON only:
 {
@@ -92,8 +101,7 @@ Rules:
 Resume:
 ${rawText}`;
 
-  const result = await callWithRetry(() => model.generateContent(prompt));
-  const raw = result.response.text();
+  const raw = await generate(prompt);
 
   try {
     const parsed = JSON.parse(cleanJson(raw));
@@ -128,7 +136,6 @@ export async function scoreJobs(
   if (jobs.length === 0) return [];
 
   const t0 = Date.now();
-  const model = getModel();
 
   const resumeProfile = {
     skills: resume.skills,
@@ -165,39 +172,41 @@ ${JSON.stringify(resumeProfile)}
 Jobs to score (${jobs.length} jobs):
 ${JSON.stringify(jobDescriptions)}
 
-Return a JSON array with exactly ${jobs.length} objects, one per job in the same order:
+Return a JSON array with exactly ${jobs.length} objects, one per job in the same order.
+Fill the fields in this order — gather evidence first, then score from that evidence:
 [
   {
     "index": 0,
-    "overall_score": 0,
+    "matched": [],
+    "missing": [],
     "skills_score": 0,
     "title_score": 0,
     "domain_score": 0,
-    "matched": [],
-    "missing": [],
     "reasoning": ""
   }
 ]
 
-Scoring weights:
-- overall_score: integer 0-100
-- skills_score: integer 0-50 (weighted 50%)
-- title_score: integer 0-30 (seniority + role alignment, weighted 30%)
-- domain_score: integer 0-20 (industry fit, weighted 20%)
-- matched: array of strings like "5 years Python → Python required"
-- missing: array of strings describing genuinely absent skills
-- reasoning: one sentence explaining the score
+Fields:
+- matched: requirements the candidate meets, as strings like "5 years Python → Python required"
+- missing: requirements from the job description the candidate does NOT clearly meet (skills, seniority/years, domain, tools, location constraints). Be honest — most real jobs have at least one gap.
+- skills_score: integer 0-50 — how much of the required skill set is covered
+- title_score: integer 0-30 — seniority and role alignment (e.g. IC applying to a people-manager role, or 3 years vs 8+ required, loses points here)
+- domain_score: integer 0-20 — industry / product-area fit
+- reasoning: one sentence explaining the score; its tone must match the total (skills + title + domain)
+
+Calibration:
+- The total (skills + title + domain) is the match percentage. 85+ = near-perfect fit, 70-84 = strong, 50-69 = good with clear gaps, below 50 = partial.
+- Award the maximum for a component only when there are no gaps for it in "missing".
+- Each item in "missing" must reduce the relevant component score.
 All scores must be integers, never floats.`;
 
-  const result = await callWithRetry(() => model.generateContent(prompt));
-  const raw = result.response.text();
+  const raw = await generate(prompt);
   console.log(`[gemini-score-batch] ${Date.now() - t0}ms (${jobs.length} jobs)`);
 
   try {
     const scores = JSON.parse(cleanJson(raw));
     const scoresArray: Array<{
       index: number;
-      overall_score: number;
       skills_score: number;
       title_score: number;
       domain_score: number;
@@ -208,16 +217,22 @@ All scores must be integers, never floats.`;
 
     const scored: ScoredJob[] = scoresArray
       .filter((s) => jobs[s.index] != null)
-      .map((s) => ({
-        ...jobs[s.index],
-        overall_score: Math.round(s.overall_score ?? 0),
-        skills_score: Math.round(s.skills_score ?? 0),
-        title_score: Math.round(s.title_score ?? 0),
-        domain_score: Math.round(s.domain_score ?? 0),
-        matched: s.matched ?? [],
-        missing: s.missing ?? [],
-        reasoning: s.reasoning ?? "",
-      }));
+      .map((s) => {
+        const skills = clampScore(s.skills_score, 50);
+        const title = clampScore(s.title_score, 30);
+        const domain = clampScore(s.domain_score, 20);
+        return {
+          ...jobs[s.index],
+          // Derived from the breakdown so the badge and the drawer can never disagree
+          overall_score: skills + title + domain,
+          skills_score: skills,
+          title_score: title,
+          domain_score: domain,
+          matched: s.matched ?? [],
+          missing: s.missing ?? [],
+          reasoning: s.reasoning ?? "",
+        };
+      });
 
     // Fill in any jobs the model dropped
     const scoredIndexes = new Set(scoresArray.map((s) => s.index));

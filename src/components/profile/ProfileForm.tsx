@@ -243,10 +243,10 @@ export function ProfileForm({ initialData }: ProfileFormProps) {
                 )}
                 <div>
                   <p className="text-sm font-medium text-gray-900">
-                    Email notifications
+                    Daily job alerts
                   </p>
                   <p className="text-xs text-gray-500">
-                    Get matched jobs sent to your inbox
+                    New matches appear in your Notifications
                   </p>
                 </div>
               </div>

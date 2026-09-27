@@ -3,9 +3,8 @@
 ## Stack
 - Next.js 16 (App Router), TypeScript, Tailwind CSS v4
 - Supabase (Postgres, Auth, Storage, Edge Functions)
-- Google Gemini 1.5 Flash (`@google/generative-ai`)
+- Google Gemini 3.8 Flash with 2.5 Flash fallback (`@google/generative-ai`, `GEMINI_MODELS` in `src/lib/gemini.ts`)
 - Adzuna API for live job listings
-- Resend for transactional email
 
 ## Environment Variables
 ```
@@ -15,7 +14,6 @@ SUPABASE_SERVICE_ROLE_KEY=       # server-only, never NEXT_PUBLIC_
 GEMINI_API_KEY=                  # server-only
 ADZUNA_APP_ID=
 ADZUNA_APP_KEY=
-RESEND_API_KEY=                  # server-only
 ```
 
 ## Key Architecture Notes
@@ -79,6 +77,7 @@ RESEND_API_KEY=                  # server-only
 2. `POST /api/fetch-jobs` — skills + role → Adzuna API → job list
 3. `POST /api/score-jobs` — resume + jobs → Gemini → ranked scored jobs
 4. Results displayed ranked by overall_score desc, max 20 per page
+5. `overall_score` is computed in code as skills (0-50) + title (0-30) + domain (0-20) — Gemini is never asked for it directly, so the badge and breakdown can't disagree
 
 ## Adzuna API
 - Base: `https://api.adzuna.com/v1/api/jobs/us/search/1`
@@ -145,14 +144,14 @@ Numbered buttons in `JobList` (`PaginationBar` component):
 3. `POST /api/fetch-jobs` hits Adzuna for live listings
 4. `POST /api/score-jobs` calls Gemini to score each job (0-100)
 5. Results shown ranked in client state; cleared on page refresh or tab close
-6. CTA nudges user to create account to save results and enable alerts
+6. No sign-in / sign-up CTAs are shown in the UI (Navbar and results banner removed); `/login` and `/signup` routes still exist
 
 ### Flow 2 — Authenticated
 - Same pipeline as Flow 1 after resume drop
 - After parsing, `/api/save-profile` (upsert) saves `resume_text` to `profiles` table
 - `/profile` page lets user manage personal info, replace resume, toggle notifications
 - `/notifications` page shows matches pushed by the nightly Edge Function
-- Nightly cron: fetches `resume_text` from profiles, re-runs pipeline, inserts rows, sends Resend email
+- Nightly cron: fetches `resume_text` from profiles, re-runs pipeline, inserts rows into `notifications` (in-app only — no email; Resend was removed)
 
 ## Authenticated Dashboard (Flow 3)
 - Homepage (`/`) auto-detects auth state on load
@@ -176,7 +175,7 @@ Numbered buttons in `JobList` (`PaginationBar` component):
 supabase functions deploy nightly-match --project-ref <your-project-ref>
 
 # Set secrets (run from project root)
-supabase secrets set GEMINI_API_KEY=... ADZUNA_APP_ID=... ADZUNA_APP_KEY=... RESEND_API_KEY=... CRON_SECRET=<random-secret>
+supabase secrets set GEMINI_API_KEY=... ADZUNA_APP_ID=... ADZUNA_APP_KEY=... CRON_SECRET=<random-secret>
 ```
 
 ### Scheduling via Supabase pg_cron
@@ -197,9 +196,6 @@ select cron.schedule(
 
 ### Authorization
 The Edge Function requires `Authorization: Bearer {CRON_SECRET}` header. Set `CRON_SECRET` as a Supabase secret (above) and use the same value in the pg_cron SQL.
-
-### Email Sender Domain
-`resend.ts` sends from `noreply@jobmate.app`. This domain must be verified in the Resend dashboard. For local testing, you can change the `from` address to `onboarding@resend.dev` (Resend's shared test domain), but emails will only reach the Resend account owner's email.
 
 ## Legal Pages
 
